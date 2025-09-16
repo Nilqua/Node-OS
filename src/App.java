@@ -1,4 +1,3 @@
-import java.lang.reflect.Member;
 import java.util.ArrayList;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -200,6 +199,7 @@ public class App {
                         electionInProgress = true;
 
                         // Elect the lowest client ID as leader
+                        // TODO : new leader election algorithm
                         for (String member : memberList) {
                             if (!member.contains(" (Dead)")) {
                                 leaderId = member;
