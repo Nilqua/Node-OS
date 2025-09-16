@@ -1,3 +1,4 @@
+import java.lang.reflect.Member;
 import java.util.ArrayList;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
@@ -10,10 +11,10 @@ public class App {
     private static final String WILL_TOPIC = "topic/will";
     private static final String BOSS_ANNOUNCE_TOPIC = "topic/BossAnnounce";
     private static final String BROKER = "tcp://192.168.100.9:1883";
-    private static final int BaseThreadsleep = 3000;
+    private static final int BaseThreadsleep = 1000;
 
     private static volatile String leaderId = null;
-    private static volatile boolean electionInProgress = false; // TODO IDK if this is needed
+    private static volatile boolean electionInProgress = false;
 
     public static void main(String[] args) throws Exception {
         // Random client ID + Will message
@@ -24,7 +25,7 @@ public class App {
         MqttClient client = new MqttClient(BROKER, CLIENT_ID);
         MqttConnectOptions options = new MqttConnectOptions();
         options.setCleanSession(true);
-        options.setKeepAliveInterval(2);
+        options.setKeepAliveInterval(10);
         options.setWill(WILL_TOPIC, WILL_MESSAGE.getBytes(), 1, false);
         client.connect(options);
         System.out.println("Connected to broker with client ID: " + CLIENT_ID);
@@ -43,9 +44,12 @@ public class App {
 
         // Start Status Thread
         statusThread(client);
+
+        //start Validation Thread
+        validationThread();
     }
 
-    // Receive Thread
+    // response Thread
     private static void responses(MqttClient client) {
         //use BlockingQueue to get messages
         BlockingQueue<String> messageQueue = new LinkedBlockingQueue<>();
@@ -139,10 +143,7 @@ public class App {
                                 leaderId = null;
                                 electionInProgress = false;
                                 System.out.println("Leader " + clientId + " has died.");
-                                MqttMessage emptyMsg = new MqttMessage(new byte[0]);
-                                emptyMsg.setQos(1);
-                                emptyMsg.setRetained(true);
-                                sendMessage(client,BOSS_ANNOUNCE_TOPIC,emptyMsg.toString());
+                                clearRetain(client, BOSS_ANNOUNCE_TOPIC);
                             }
                         }
 
@@ -219,13 +220,16 @@ public class App {
 
                 // Check for boss announce messages
                 try {
-                    String response = messageQueue.take();
+                    String response = messageQueue.poll(300, java.util.concurrent.TimeUnit.MILLISECONDS);
+                    if(response == null) {
+                        continue;
+                    }
                     System.out.println(response);
 
                     // Update leaderId if a new leader is announced
                     if (response.startsWith("BossAnnounce: ")) {
-                        String newLeaderId = response.substring(14, 17);
-                        if(leaderId == newLeaderId){
+                        String newLeaderId = response.substring("BossAnnounce: ".length()).trim();
+                        if (leaderId != null && leaderId.equals(newLeaderId)){
                             continue;
                         }
                         synchronized (memberList) {
@@ -260,7 +264,6 @@ public class App {
                     System.out.println("Current members: " + memberList);
                     System.out.println("Current leader: " + leaderId);
                     System.out.println("---------------------");
-                    sendMessage(client, BOSS_ANNOUNCE_TOPIC, leaderId);
                 }
 
                 // Sleep the thread
@@ -275,13 +278,61 @@ public class App {
         }).start();
     }
 
+    // Validation Thread
+    private static void validationThread() {
+        new Thread(() -> {
+            try {
+                Thread.sleep(BaseThreadsleep * 3L);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                System.out.println(e);
+            }
+            while (true) {
+                boolean validLeader = false;
+                synchronized (memberList) {
+                    if (leaderId == null) {
+                        break;
+                        }
+                    for (String member : memberList) {
+                        if (member.contains(leaderId) && !member.contains(" (Dead)")) {
+                            validLeader = true;
+                            break;
+                        }
+                    }
+                    if (!validLeader) {
+                        leaderId = null;
+                        electionInProgress = false;
+                    }
+                    System.out.println("Initial member list: " + memberList);
+                }
+                try {
+                    Thread.sleep(BaseThreadsleep * 5L);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    System.out.println(e);
+                    break;
+                }
+            }
+        }).start();
+    }
+    
     // Boss Announce Sender
     private static void sendBossAnnounce(MqttClient client, String id) {
         try {
-            MqttMessage msg = new MqttMessage(id == null ? "".getBytes() : id.getBytes());
+            MqttMessage msg = new MqttMessage(id == null ? new byte[0] : id.getBytes());
             msg.setQos(1);
-            msg.setRetained(true); // make leader sticky for late joiners
+            msg.setRetained(true);
             client.publish(BOSS_ANNOUNCE_TOPIC, msg);
+        } catch (Exception ignore) { }
+    }
+
+    // Clear Retain Message
+    private static void clearRetain(MqttClient client, String topic) {
+        try {
+            MqttMessage empty = new MqttMessage(new byte[0]);
+            empty.setQos(1);
+            empty.setRetained(true);
+            client.publish(topic, empty);
         } catch (Exception ignore) { }
     }
     
@@ -291,7 +342,7 @@ public class App {
             MqttMessage mqttMessage = new MqttMessage(message.getBytes());
             mqttMessage.setQos(1);
             client.publish(topic, mqttMessage);
-        } catch (Exception ignore) {
+        } catch (Exception e) {
         }
     }
 }
