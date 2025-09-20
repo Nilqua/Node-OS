@@ -4,6 +4,7 @@ import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
 
 import org.eclipse.paho.client.mqttv3.*;
+import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
 
 public class App {
     // เก็บรายชื่อสมาชิก (Client IDs)
@@ -30,7 +31,7 @@ public class App {
         final String WILL_MESSAGE = CLIENT_ID + " died";
 
         // สร้าง client และเชื่อมต่อกับ broker
-        MqttClient client = new MqttClient(BROKER, CLIENT_ID);
+        MqttClient client = new MqttClient(BROKER, CLIENT_ID, new MemoryPersistence());
         MqttConnectOptions options = new MqttConnectOptions();
         options.setCleanSession(true);
         options.setKeepAliveInterval(10);
