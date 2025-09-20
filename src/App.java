@@ -317,7 +317,7 @@ public class App {
     private static void validationThread() {
         new Thread(() -> {
             try {
-                Thread.sleep(BaseThreadsleep * 3L);
+                Thread.sleep(BaseThreadsleep * 10L);
             } catch (InterruptedException e) {
             }
             while (true) {
