@@ -1,26 +1,35 @@
 import java.util.ArrayList;
 import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
+
 import org.eclipse.paho.client.mqttv3.*;
 
 public class App {
-    // Constants and Variables
+    // เก็บรายชื่อสมาชิก (Client IDs)
     private static final ArrayList<String> memberList = new ArrayList<>();
+
+    // กำหนด topic ต่าง ๆ ที่ใช้
     private static final String HEARTBEAT_TOPIC = "topic/heartbeat";
     private static final String WILL_TOPIC = "topic/will";
     private static final String BOSS_ANNOUNCE_TOPIC = "topic/BossAnnounce";
-    private static final String BROKER = "tcp://192.168.100.9:1883";
-    private static final int BaseThreadsleep = 1000;
 
+    // ที่อยู่ broker MQTT
+    private static final String BROKER = "tcp://localhost:1883";
+
+    // เวลา sleep พื้นฐานของ thread (ms)
+    private static final int BaseThreadsleep = 3000;
+
+    // ตัวแปรเก็บ leader ปัจจุบัน และสถานะการเลือกตั้ง
     private static volatile String leaderId = null;
     private static volatile boolean electionInProgress = false;
 
     public static void main(String[] args) throws Exception {
-        // Random client ID + Will message
+        // สร้าง clientID (ใช้เลข 3 หลักจากเวลา) + Will message
         final String CLIENT_ID = String.valueOf(System.currentTimeMillis()).substring(9, 12);
         final String WILL_MESSAGE = CLIENT_ID + " died";
 
-        // Create and connect MQTT client and it's options
+        // สร้าง client และเชื่อมต่อกับ broker
         MqttClient client = new MqttClient(BROKER, CLIENT_ID);
         MqttConnectOptions options = new MqttConnectOptions();
         options.setCleanSession(true);
@@ -29,48 +38,33 @@ public class App {
         client.connect(options);
         System.out.println("Connected to broker with client ID: " + CLIENT_ID);
 
-        // Start Receive heartbeat messages thread
-        responses(client);
-
-        // Start Heartbeat thread
-        heartBeat(client);
-
-        // Start Will Client Thread
-        willClient(client);
-
-        // Start Boss Thread
-        bossThread(client);
-
-        // Start Status Thread
-        statusThread(client);
-
-        //start Validation Thread
-        validationThread();
+        // เริ่ม thread ต่าง ๆ
+        responses(client); // รับ heartbeat จาก client อื่น
+        heartBeat(client); // ส่ง heartbeat ของตัวเอง
+        willClient(client); // ฟัง Will message จาก client ที่ตาย
+        bossThread(client); // จัดการเลือก leader
+        statusThread(client); // พิมพ์สถานะปัจจุบัน
+        validationThread(); // ตรวจสอบความถูกต้องของ leader
     }
 
-    // response Thread
+    // Thread สำหรับรับ heartbeat และอัปเดต member list
     private static void responses(MqttClient client) {
-        //use BlockingQueue to get messages
         BlockingQueue<String> messageQueue = new LinkedBlockingQueue<>();
         try {
-            // Subscribe to MQTT topics
             client.subscribe(HEARTBEAT_TOPIC, 1, (topic, message) -> {
-                messageQueue.offer(new String("Heartbeat: " + new String(message.getPayload())));
+                messageQueue.offer("Heartbeat: " + new String(message.getPayload()));
             });
         } catch (MqttException e) {
-            System.out.println("Error in subscribe: " + e);
+            System.err.println("Error in subscribe: " + e);
         }
         new Thread(() -> {
-
             while (true) {
                 try {
-                    // Take message from queue
                     String response = messageQueue.take();
                     synchronized (System.out) {
                         System.out.println(response);
                     }
-
-                    // check and update memberList
+                    // เพิ่ม client เข้า memberList ถ้ายังไม่มี
                     if (response.startsWith("Heartbeat: ")) {
                         String clientId = response.substring(11, 14);
                         synchronized (memberList) {
@@ -81,63 +75,57 @@ public class App {
                         }
                     }
                 } catch (Exception e) {
-                    System.out.println("Error in message processing: " + e);
+                    System.err.println("Error in message processing: " + e);
                 }
-
-                // Sleep the thread
                 try {
                     Thread.sleep(BaseThreadsleep);
                 } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    System.out.println(e);
                     break;
                 }
             }
         }).start();
     }
 
-    // Heartbeat Thread
+    // Thread สำหรับส่ง heartbeat ของตัวเอง
     private static void heartBeat(MqttClient client) {
         new Thread(() -> {
             while (true) {
-                // Send heartbeat message
                 sendMessage(client, HEARTBEAT_TOPIC, client.getClientId() + " is alive");
-
-                // Sleep the thread
                 try {
-                    Thread.sleep(BaseThreadsleep);
+                    Thread.sleep(BaseThreadsleep + 5000);
                 } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    System.out.println(e);
                     break;
                 }
             }
         }).start();
     }
 
-    // Will Client Thread
+    // Thread สำหรับรับ Will message และ mark ว่า client ตาย
     private static void willClient(MqttClient client) {
-        //use BlockingQueue to get messages
         BlockingQueue<String> messageQueue = new LinkedBlockingQueue<>();
         try {
             client.subscribe(WILL_TOPIC, 1, (topic, message) -> {
-            messageQueue.offer(new String("Will: " + new String(message.getPayload())));
-        });
+                messageQueue.offer("Will: " + new String(message.getPayload()));
+            });
         } catch (MqttException e) {
-            System.out.println("Error in status check: " + e);
+            System.err.println("Error in status check: " + e);
         }
         new Thread(() -> {
             while (true) {
                 try {
-                    // Take message from queue
                     String response = messageQueue.take();
                     System.out.println(response);
 
-                    //check and update memberList for dead clients
                     if (response.startsWith("Will: ")) {
                         String clientId = response.substring(6, 9);
                         synchronized (memberList) {
-                            memberList.set(memberList.indexOf(clientId), clientId + " (Dead)");
+                            int idx = memberList.indexOf(clientId);
+                            if (idx != -1) {
+                                memberList.set(idx, clientId + " (Dead)");
+                            } else if (!memberList.contains(clientId + " (Dead)")) {
+                                memberList.add(clientId + " (Dead)");
+                            }
+                            // ถ้า leader ตาย ให้เคลียร์ leader ออก
                             if (clientId.equals(leaderId)) {
                                 leaderId = null;
                                 electionInProgress = false;
@@ -145,39 +133,47 @@ public class App {
                                 clearRetain(client, BOSS_ANNOUNCE_TOPIC);
                             }
                         }
-
                     }
                 } catch (Exception e) {
                     System.err.println("Error in status client: " + e);
                 }
-
-                // Sleep the thread
                 try {
                     Thread.sleep(BaseThreadsleep);
                 } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    System.out.println(e);
+                    break;
                 }
             }
         }).start();
     }
 
-    // Boss Thread
+    // Thread สำหรับจัดการเลือก leader และฟัง BossAnnounce
     private static void bossThread(MqttClient client) {
-        BlockingQueue<String> messageQueue = new LinkedBlockingQueue<>();
+        // ใช้ BossAnnounce เป็น COORDINATOR (retained)
+        final String ELECTION_TOPIC = "topic/election"; // ELECTION:<id>
+        final String ANSWER_TOPIC = "topic/answer"; // OK:<id>
+
+        final int WAIT_HIGHER_MS = 2000; // เวลารอ OK จากไอดีที่สูงกว่า
+        final int WAIT_COORD_MS = 3000; // เวลารอประกาศหัวหน้าหลังได้ OK
+
+        BlockingQueue<String> bossQueue = new LinkedBlockingQueue<>(); // รับ BossAnnounce
+        BlockingQueue<String> electionQueue = new LinkedBlockingQueue<>();
+        BlockingQueue<String> answerQueue = new LinkedBlockingQueue<>();
+
         try {
-            // Subscribe to MQTT topics
-            client.subscribe(BOSS_ANNOUNCE_TOPIC, 1, (topic, message) -> {
-                messageQueue.offer(new String("BossAnnounce: " + new String(message.getPayload())));
-            });
+            client.subscribe(BOSS_ANNOUNCE_TOPIC, 1,
+                    (topic, message) -> bossQueue.offer("BossAnnounce: " + new String(message.getPayload())));
+            client.subscribe(ELECTION_TOPIC, 1,
+                    (topic, message) -> electionQueue.offer(new String(message.getPayload())));
+            client.subscribe(ANSWER_TOPIC, 1, (topic, message) -> answerQueue.offer(new String(message.getPayload())));
         } catch (MqttException e) {
-            System.out.println("Error in subscribe: " + e);
+            System.err.println("Error in subscribe: " + e);
         }
         new Thread(() -> {
+            // 1. ตอนเริ่ม: รอ leader จาก retained message
             final long deadline = System.currentTimeMillis() + (BaseThreadsleep * 2L);
             try {
                 while (System.currentTimeMillis() < deadline) {
-                    String pre = messageQueue.poll(300, java.util.concurrent.TimeUnit.MILLISECONDS);
+                    String pre = bossQueue.poll(300, java.util.concurrent.TimeUnit.MILLISECONDS);
                     if (pre != null && pre.startsWith("BossAnnounce: ")) {
                         String payload = pre.substring("BossAnnounce: ".length()).trim();
                         if (!payload.isEmpty() && !"null".equalsIgnoreCase(payload)) {
@@ -192,109 +188,153 @@ public class App {
             }
 
             while (true) {
-                // If no leader, start election
-                    if (leaderId == null && !electionInProgress) {
-                        System.out.println("No leader detected, starting election...");
-                        synchronized (memberList) {
-                        electionInProgress = true;
+                // 2.ถ้าไม่มี leader ให้เริ่มเลือกตั้งใหม่
+                if (leaderId == null && !electionInProgress) {
+                    System.out.println("No leader detected, starting election...");
 
-                        // Elect the lowest client ID as leader
-                        // TODO : new leader election algorithm
-                        for (String member : memberList) {
-                            if (!member.contains(" (Dead)")) {
-                                leaderId = member;
-                                break;
+                    synchronized (memberList) {
+                        electionInProgress = true;
+                    }
+
+                    // ส่ง ELECTION
+                    sendMessage(client, ELECTION_TOPIC, "ELECTION:" + client.getClientId());
+                    boolean higherIdExists = false;
+                    long waitDeadline = System.currentTimeMillis() + WAIT_HIGHER_MS;
+                    try {
+                        while (System.currentTimeMillis() < waitDeadline) {
+                            String response = answerQueue.poll(50, java.util.concurrent.TimeUnit.MILLISECONDS);
+                            if (response != null && response.startsWith("OK:")) {
+                                String responderId = response.substring(3).trim();
+                                if (responderId.compareTo(client.getClientId()) > 0) {
+                                    higherIdExists = true;
+                                }
                             }
                         }
+                    } catch (InterruptedException ie) {
+                        Thread.currentThread().interrupt();
+                    }
 
-                        //check if leaderId is still null
-                        if (leaderId != null) {
-                            sendBossAnnounce(client,leaderId);
-                            System.out.println("New leader elected: " + leaderId);
-                        } else {
-                            System.out.println("No eligible members to elect as leader.");
+                    // ถ้ามีไอดีที่สูงกว่า รอ BossAnnounce
+                    if (higherIdExists) {
+                        long coordDeadline = System.currentTimeMillis() + WAIT_COORD_MS;
+                        boolean sawLeader = false;
+                        try {
+                            while (System.currentTimeMillis() < coordDeadline) {
+                                String response = bossQueue.poll(100, java.util.concurrent.TimeUnit.MILLISECONDS);
+                                if (response != null && response.startsWith("BossAnnounce: ")) {
+                                    String newLeader = response.substring("BossAnnounce: ".length()).trim();
+                                    if (!newLeader.isEmpty() && !"null".equalsIgnoreCase(newLeader)) {
+                                        leaderId = newLeader;
+                                        sawLeader = true;
+                                        break;
+                                    }
+                                }
+                            }
+                        } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
                         }
+
+                        if (!sawLeader) {
+                            System.out.println("No leader announced, restarting election...");
+                            synchronized (memberList) {
+                                electionInProgress = false;
+                            }
+                            continue;
+                        }
+                    } else {
+                        // ตัวเองมีไอดีสูงสุด → เป็น leader
+                        leaderId = client.getClientId();
+                        sendBossAnnounce(client, leaderId);
+                        System.out.println("New leader elected: " + leaderId);
+                    }
+
+                    synchronized (memberList) {
                         electionInProgress = false;
                     }
                 }
 
-                // Check for boss announce messages
+                // 3. ฟัง elction และตอบ Ok ถ้าไอดีสูงกว่า
                 try {
-                    String response = messageQueue.poll(300, java.util.concurrent.TimeUnit.MILLISECONDS);
-                    if(response == null) {
-                        continue;
-                    }
-                    System.out.println(response);
-
-                    // Update leaderId if a new leader is announced
-                    if (response.startsWith("BossAnnounce: ")) {
-                        String newLeaderId = response.substring("BossAnnounce: ".length()).trim();
-                        if (leaderId != null && leaderId.equals(newLeaderId)){
-                            continue;
-                        }
-                        synchronized (memberList) {
-                            if (memberList.contains(newLeaderId) && !newLeaderId.contains(" (Dead)")) {
-                                leaderId = newLeaderId;
+                    String eMsg = electionQueue.poll(50, TimeUnit.MILLISECONDS);
+                    if (eMsg != null && eMsg.startsWith("ELECTION:")) {
+                        String challenger = eMsg.substring("ELECTION:".length());
+                        if (challenger.compareTo(client.getClientId()) < 0) {
+                            sendMessage(client, ANSWER_TOPIC, "OK:" + client.getClientId());
+                            if (!electionInProgress) {
+                                electionInProgress = true;
+                                leaderId = null;
                             }
                         }
                     }
-                } catch (Exception e) {
-                    System.out.println("Error in boss announce processing: " + e);
+                } catch (Exception ignore) {
                 }
 
-                // Sleep the thread
+                // 4. ฟัง BossAnnounce
+                try {
+                    String bMsg = bossQueue.poll(300, java.util.concurrent.TimeUnit.MILLISECONDS);
+                    if (bMsg != null && bMsg.startsWith("BossAnnounce: ")) {
+                        String newLeader = bMsg.substring("BossAnnounce: ".length()).trim();
+                        if (newLeader != null && !newLeader.isEmpty()) {
+                            synchronized (memberList) {
+                                if (!newLeader.contains(" (Dead)")) {
+                                    leaderId = newLeader;
+                                }
+                            }
+                        }
+                    }
+                } catch (Exception ignore) {
+                }
+
                 try {
                     Thread.sleep(BaseThreadsleep);
                 } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    System.out.println(e);
                     break;
                 }
             }
         }).start();
     }
 
-    // Status Thread
+    // Thread สำหรับแสดงสถานะสมาชิกและ leader
     private static void statusThread(MqttClient client) {
         new Thread(() -> {
             while (true) {
-                // Print current members and leader
                 synchronized (memberList) {
                     System.out.println("--- Status Report ---");
                     System.out.println("Current members: " + memberList);
                     System.out.println("Current leader: " + leaderId);
                     System.out.println("---------------------");
                 }
-
-                // Sleep the thread
                 try {
                     Thread.sleep(BaseThreadsleep);
                 } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    System.out.println(e);
                     break;
                 }
             }
         }).start();
     }
 
-    // Validation Thread
+    // Thread สำหรับตรวจสอบว่า leader ที่ถืออยู่ยังมีจริงหรือไม่
     private static void validationThread() {
         new Thread(() -> {
             try {
                 Thread.sleep(BaseThreadsleep * 3L);
             } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                System.out.println(e);
             }
             while (true) {
+                // อ่านสถานะ leader โดยไม่จับล็อก เพื่อไม่บล็อกเธรดอื่น
+                String currentLeader = leaderId;
+                if (currentLeader == null) {
+                    try {
+                        Thread.sleep(BaseThreadsleep * 2L);
+                    } catch (InterruptedException e) {
+                    }
+                    continue;
+                }
+
                 boolean validLeader = false;
                 synchronized (memberList) {
-                    if (leaderId == null) {
-                        break;
-                        }
                     for (String member : memberList) {
-                        if (member.contains(leaderId) && !member.contains(" (Dead)")) {
+                        if (member.contains(currentLeader) && !member.contains(" (Dead)")) {
                             validLeader = true;
                             break;
                         }
@@ -302,47 +342,50 @@ public class App {
                     if (!validLeader) {
                         leaderId = null;
                         electionInProgress = false;
+                        System.out.println("Leader is not valid reset to null");
                     }
-                    System.out.println("Initial member list: " + memberList);
                 }
                 try {
                     Thread.sleep(BaseThreadsleep * 5L);
                 } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    System.out.println(e);
                     break;
                 }
             }
         }).start();
     }
-    
-    // Boss Announce Sender
+
+    // ส่ง BossAnnounce
     private static void sendBossAnnounce(MqttClient client, String id) {
         try {
             MqttMessage msg = new MqttMessage(id == null ? new byte[0] : id.getBytes());
             msg.setQos(1);
             msg.setRetained(true);
             client.publish(BOSS_ANNOUNCE_TOPIC, msg);
-        } catch (Exception ignore) { }
+        } catch (Exception e) {
+            System.err.println("sendBossAnnounce error: " + e);
+        }
     }
 
-    // Clear Retain Message
+    // ล้าง retained message ของ BossAnnounce
     private static void clearRetain(MqttClient client, String topic) {
         try {
             MqttMessage empty = new MqttMessage(new byte[0]);
             empty.setQos(1);
             empty.setRetained(true);
             client.publish(topic, empty);
-        } catch (Exception ignore) { }
+        } catch (Exception e) {
+            System.err.println("clearRetain error: " + e);
+        }
     }
-    
-    // Message Sender
+
+    // ฟังก์ชันส่งข้อความทั่วไป
     private static void sendMessage(MqttClient client, String topic, String message) {
         try {
             MqttMessage mqttMessage = new MqttMessage(message.getBytes());
             mqttMessage.setQos(1);
             client.publish(topic, mqttMessage);
         } catch (Exception e) {
+            System.err.println("sendMessage error: " + e);
         }
     }
 }
