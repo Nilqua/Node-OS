@@ -166,9 +166,9 @@ public class App {
                 while (System.currentTimeMillis() < deadline) {
                     String oldBoss = bossQueue.poll(50, java.util.concurrent.TimeUnit.MILLISECONDS);
                     if (oldBoss != null && oldBoss.startsWith("BossAnnounce: ")) {
-                        String oldBossID = oldBoss.substring("BossAnnounce: ".length()).trim();
-                        if (!oldBossID.isEmpty() && !"null".equalsIgnoreCase(oldBossID)) {
-                            leaderId = oldBossID;
+                        String oldBossIDString = oldBoss.substring("BossAnnounce: ".length()).trim();
+                        if (!oldBossIDString.isEmpty() && !"null".equalsIgnoreCase(oldBossIDString)) {
+                            leaderId = oldBossIDString;
                             System.out.println("Leader found on startup: " + leaderId);
                             break;
                         }
@@ -252,7 +252,7 @@ public class App {
                     if (eMsg != null && eMsg.startsWith("ELECTION:")) {
                         String challenger = eMsg.substring("ELECTION:".length());
 
-                        if (challenger.compareTo(client.getClientId()) < 0) {
+                        if (client.getClientId().compareTo(challenger) > 0) {
                             sendMessage(client, ANSWER_TOPIC, "OK:" + client.getClientId());
                             if(client.getClientId().equals(leaderId)) {
                                 sendBossAnnounce(client, leaderId);
