@@ -4,7 +4,6 @@ import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.TimeUnit;
-
 import org.eclipse.paho.client.mqttv3.*;
 import org.eclipse.paho.client.mqttv3.persist.MemoryPersistence;
 
@@ -28,14 +27,13 @@ public class App {
     private static volatile boolean electionInProgress = false;
 
     public static void main(String[] args) throws Exception {
-        // สร้าง clientID (ใช้เลข 3 หลักจากเวลา) + Will message
+        // สร้าง clientID (ใช้เลข 3 หลักจากเวลา)
         final String CLIENT_ID = String.valueOf(System.currentTimeMillis()).substring(9, 12);
 
         // สร้าง client และเชื่อมต่อกับ broker
         MqttClient client = new MqttClient(BROKER, CLIENT_ID, new MemoryPersistence());
         MqttConnectOptions options = new MqttConnectOptions();
         options.setCleanSession(true);
-        options.setKeepAliveInterval(10);
         client.connect(options);
         System.out.println("Connected to broker with client ID: " + CLIENT_ID);
 
@@ -102,7 +100,7 @@ public class App {
         }).start();
     }
 
-    // Thread สำหรับรับ Will message และ mark ว่า client ตาย
+    // Thread สำหรับ mark ว่า client ตาย
     private static void timeOutThread(MqttClient client) {
         new Thread(() -> {
             while (true) {
@@ -119,9 +117,8 @@ public class App {
                                 int idx = memberList.indexOf(clientId);
                                 if (idx != -1) {
                                     memberList.set(idx, clientId + " (Dead)");
-                                } else if (!memberList.contains(clientId + " (Dead)")) {
-                                    memberList.add(clientId + " (Dead)");
                                 }
+
                                 // ถ้า leader ตาย ให้เคลียร์ leader ออก
                                 if (clientId.equals(leaderId)) {
                                     leaderId = null;
@@ -156,10 +153,8 @@ public class App {
         BlockingQueue<String> answerQueue = new LinkedBlockingQueue<>();
 
         try {
-            client.subscribe(BOSS_ANNOUNCE_TOPIC, 1,
-                    (topic, message) -> bossQueue.offer("BossAnnounce: " + new String(message.getPayload())));
-            client.subscribe(ELECTION_TOPIC, 1,
-                    (topic, message) -> electionQueue.offer(new String(message.getPayload())));
+            client.subscribe(BOSS_ANNOUNCE_TOPIC, 1,(topic, message) -> bossQueue.offer("BossAnnounce: " + new String(message.getPayload())));
+            client.subscribe(ELECTION_TOPIC, 1,(topic, message) -> electionQueue.offer(new String(message.getPayload())));
             client.subscribe(ANSWER_TOPIC, 1, (topic, message) -> answerQueue.offer(new String(message.getPayload())));
         } catch (MqttException e) {
             System.err.println("Error in subscribe: " + e);
@@ -169,11 +164,11 @@ public class App {
             final long deadline = System.currentTimeMillis() + (BaseThreadsleep * 2L);
             try {
                 while (System.currentTimeMillis() < deadline) {
-                    String pre = bossQueue.poll(50, java.util.concurrent.TimeUnit.MILLISECONDS);
-                    if (pre != null && pre.startsWith("BossAnnounce: ")) {
-                        String payload = pre.substring("BossAnnounce: ".length()).trim();
-                        if (!payload.isEmpty() && !"null".equalsIgnoreCase(payload)) {
-                            leaderId = payload;
+                    String oldBoss = bossQueue.poll(50, java.util.concurrent.TimeUnit.MILLISECONDS);
+                    if (oldBoss != null && oldBoss.startsWith("BossAnnounce: ")) {
+                        String oldBossID = oldBoss.substring("BossAnnounce: ".length()).trim();
+                        if (!oldBossID.isEmpty() && !"null".equalsIgnoreCase(oldBossID)) {
+                            leaderId = oldBossID;
                             System.out.println("Leader found on startup: " + leaderId);
                             break;
                         }
