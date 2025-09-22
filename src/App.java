@@ -110,7 +110,7 @@ public class App {
                         String clientId = entry.getKey();
                         long lastSeenTime = entry.getValue();
                         if (now - lastSeenTime > 20000) {
-                            // ถ้าไม่ได้เจอเกินเวลาที่กำหนด ให้ลบออกจาก lastSeen
+                            // ถ้าเกิน 20 วิ ให้ลบออกจาก lastSeen
                             lastSeen.remove(clientId);
                             // และเพิ่ม "(Dead)" ใน memberList
                             synchronized (memberList) {
@@ -189,6 +189,8 @@ public class App {
 
                     // ส่ง ELECTION
                     sendMessage(client, ELECTION_TOPIC, "ELECTION:" + client.getClientId());
+
+                    // ตรวจว่ามีคนสูงกว่าไหม
                     boolean higherIdExists = false;
                     long waitDeadline = System.currentTimeMillis() + WAIT_HIGHER_MS;
                     try {
@@ -256,6 +258,7 @@ public class App {
                                 if(memberList.contains(client.getClientId()+ " (Dead)")){continue;}
                                 sendMessage(client, ANSWER_TOPIC, "OK:" + client.getClientId());
                             }
+                            
                             if(client.getClientId().equals(leaderId)) {
                                 sendBossAnnounce(client, leaderId);
                             } else {
@@ -329,7 +332,7 @@ public class App {
                     }
                     continue;
                 }
-
+ 
                 boolean validLeader = false;
                 synchronized (memberList) {
                     for (String member : memberList) {
