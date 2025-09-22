@@ -251,9 +251,11 @@ public class App {
                     String eMsg = electionQueue.poll(50, TimeUnit.MILLISECONDS);
                     if (eMsg != null && eMsg.startsWith("ELECTION:")) {
                         String challenger = eMsg.substring("ELECTION:".length());
-
                         if (client.getClientId().compareTo(challenger) > 0) {
-                            sendMessage(client, ANSWER_TOPIC, "OK:" + client.getClientId());
+                            synchronized(memberList){
+                                if(memberList.contains(client.getClientId()+ " (Dead)")){continue;}
+                                sendMessage(client, ANSWER_TOPIC, "OK:" + client.getClientId());
+                            }
                             if(client.getClientId().equals(leaderId)) {
                                 sendBossAnnounce(client, leaderId);
                             } else {
@@ -270,7 +272,7 @@ public class App {
                 try {
                     String bMsg = bossQueue.poll(50, java.util.concurrent.TimeUnit.MILLISECONDS);
                     if (bMsg != null && bMsg.startsWith("BossAnnounce: ")) {
-                        String newLeader = bMsg.substring("BossAnnounce: ".length()).trim();
+                        String newLeader = bMsg.substring("BossAnnounce: ".length()).trim();                        
                         if (newLeader != null && !newLeader.isEmpty()) {
                             synchronized (memberList) {
                                 if (!newLeader.contains(" (Dead)")) {
@@ -294,8 +296,9 @@ public class App {
     private static void statusThread(MqttClient client) {
         new Thread(() -> {
             while (true) {
-                synchronized (memberList) {
+                synchronized (System.out) {
                     System.out.println("--- Status Report ---");
+                    System.out.println("This Client: " + client.getClientId());
                     System.out.println("Current members: " + memberList);
                     System.out.println("Current leader: " + leaderId);
                     System.out.println("---------------------");
